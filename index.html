@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Settlement Trust Tax Monte Carlo</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    margin: 0; background: #f4f6f9; color: #1a2230; line-height: 1.45; }
+  .wrap { display: flex; min-height: 100vh; }
+  .sidebar { width: 350px; background: #fff; border-right: 1px solid #e2e8f0; padding: 22px 20px; overflow-y: auto; flex-shrink: 0; }
+  .main { flex: 1; padding: 26px 30px; overflow-x: hidden; }
+  h1 { font-size: 19px; margin: 0 0 2px; letter-spacing: -0.2px; }
+  h2 { font-size: 14px; text-transform: uppercase; letter-spacing: 0.6px; color: #5b6b82; margin: 24px 0 12px; font-weight: 600; }
+  .sub { font-size: 12.5px; color: #7a8aa0; margin: 0 0 14px; }
+  .field { margin-bottom: 14px; }
+  label { display: block; font-size: 12.5px; font-weight: 600; margin-bottom: 4px; color: #2c3a52; }
+  label .hint { display:block; font-weight: 400; color: #93a1b5; font-size: 11px; margin-top:1px; }
+  input[type=number], select { width: 100%; padding: 8px 10px; border: 1px solid #cfd8e3; border-radius: 7px; font-size: 14px; background:#fbfcfe; }
+  input:focus, select:focus { outline: none; border-color: #2f6fed; background:#fff; }
+  .inline { display:flex; gap:10px; }
+  .inline .field { flex:1; }
+  .derived { font-size:11.5px; color:#1f7a4d; background:#eafaf1; border:1px solid #cdeedd; border-radius:7px; padding:7px 9px; margin:-6px 0 14px; }
+  button.run { width: 100%; margin-top: 8px; padding: 12px; background: #1f4fd4; color: #fff; border: none; border-radius: 8px; font-size: 14.5px; font-weight: 600; cursor: pointer; }
+  button.run:hover { background: #1740b8; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px,1fr)); gap: 14px; margin-bottom: 22px; }
+  .card { background:#fff; border:1px solid #e6ebf2; border-radius: 10px; padding: 14px 16px; }
+  .card .k { font-size: 11.5px; text-transform: uppercase; letter-spacing:0.5px; color:#7a8aa0; font-weight:600; }
+  .card .v { font-size: 22px; font-weight: 700; margin-top: 4px; letter-spacing:-0.5px; }
+  .card .v small { font-size: 13px; font-weight:600; color:#7a8aa0; }
+  .panel { background:#fff; border:1px solid #e6ebf2; border-radius: 12px; padding: 18px 20px; margin-bottom: 22px; }
+  .panel h3 { margin:0 0 4px; font-size: 15px; }
+  .panel .ph { font-size:12.5px; color:#7a8aa0; margin:0 0 14px; }
+  table { width:100%; border-collapse: collapse; font-size: 13px; }
+  th, td { padding: 7px 8px; text-align: right; border-bottom: 1px solid #eef2f7; }
+  th { color:#5b6b82; font-weight:600; font-size:11.5px; text-transform:uppercase; letter-spacing:0.4px; position:sticky; top:0; background:#fff; }
+  th:first-child, td:first-child { text-align: left; }
+  td.hl { font-weight:700; color:#15306e; }
+  .tablewrap { max-height: 420px; overflow-y:auto; }
+  .note { font-size: 12px; color:#6b7a90; background:#f7f9fc; border:1px solid #e6ebf2; border-radius:9px; padding:12px 14px; margin-top:8px;}
+  .note b{color:#3a4a63;}
+  .legalbox { font-size:11.5px; color:#7a8aa0; margin-top:18px; padding-top:14px; border-top:1px solid #eef2f7;}
+  .chartbox { position: relative; height: 340px; }
+  .badge { display:inline-block; font-size:11px; font-weight:600; color:#1f4fd4; background:#e8efff; padding:2px 8px; border-radius:20px; margin-left:6px;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <aside class="sidebar">
+    <h1>Trust Tax Simulator</h1>
+    <p class="sub">Monte Carlo annual tax for a §468B spend-down trust. Tax arises only from realizing <b>equity</b> gains; muni bonds are tax-exempt.</p>
+
+    <h2>Trust position (today)</h2>
+    <div class="field">
+      <label>Years of trust life remaining
+        <span class="hint">fund clears to $0 by year n</span></label>
+      <input type="number" id="n" value="25" min="1" max="60" step="1">
+    </div>
+    <div class="field">
+      <label>Trust market value ($M)</label>
+      <input type="number" id="mv0" value="600" min="0" step="10">
+    </div>
+    <div class="inline">
+      <div class="field">
+        <label>Equity allocation (%)
+          <span class="hint">rest in muni bonds</span></label>
+        <input type="number" id="eqw" value="50" min="0" max="100" step="1">
+      </div>
+      <div class="field">
+        <label>Unrealized gains ($M)
+          <span class="hint">all in equity sleeve</span></label>
+        <input type="number" id="ug0" value="200" min="0" step="10">
+      </div>
+    </div>
+    <div class="derived" id="derived"></div>
+
+    <h2>Asset-class assumptions</h2>
+    <div class="inline">
+      <div class="field">
+        <label>Equity return (%)
+          <span class="hint">pre-tax, mean</span></label>
+        <input type="number" id="eqr" value="6.5" step="0.1">
+      </div>
+      <div class="field">
+        <label>Equity σ (%)</label>
+        <input type="number" id="eqv" value="15" step="0.5">
+      </div>
+    </div>
+    <div class="inline">
+      <div class="field">
+        <label>Muni return (%)
+          <span class="hint">tax-free</span></label>
+        <input type="number" id="bdr" value="3.0" step="0.1">
+      </div>
+      <div class="field">
+        <label>Muni σ (%)</label>
+        <input type="number" id="bdv" value="4" step="0.5">
+      </div>
+    </div>
+
+    <h2>Tax &amp; spend-down</h2>
+    <div class="inline">
+      <div class="field">
+        <label>Tax rate (%)
+          <span class="hint">§1(e), on gains</span></label>
+        <input type="number" id="tax" value="37" step="0.5">
+      </div>
+      <div class="field">
+        <label>Planning rate (%)
+          <span class="hint">after-tax, sets schedule</span></label>
+        <input type="number" id="plan" value="4.5" step="0.1">
+      </div>
+    </div>
+    <div class="field">
+      <label>Withdrawal / rebalancing policy
+        <span class="hint">which sleeve funds the spend-down</span></label>
+      <select id="policy">
+        <option value="rebal" selected>Maintain target allocation (rebalance)</option>
+        <option value="bonds">Spend bonds first (defer gains)</option>
+        <option value="equity">Spend equities first</option>
+        <option value="split7030">Fixed split: 70% bonds / 30% equity</option>
+        <option value="split5050">Fixed split: 50% bonds / 50% equity</option>
+        <option value="split3070">Fixed split: 30% bonds / 70% equity</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>Admin costs (% of MV)
+        <span class="hint">deductible against gains</span></label>
+      <input type="number" id="admin" value="0.25" step="0.05">
+    </div>
+
+    <h2>Simulation</h2>
+    <div class="field">
+      <label>Number of paths</label>
+      <select id="sims"><option>1000</option><option selected>5000</option><option>10000</option><option>20000</option></select>
+    </div>
+    <button class="run" id="runBtn">Run simulation</button>
+    <div class="legalbox">
+      <b>Tax basis:</b> §468B QSFs are taxed at the §1(e) max rate on modified gross income and do <b>not</b> receive the §1(h) preferential capital-gains rate — so realized equity gains are taxed at the full rate above. Muni interest is excluded; claimant distributions are not deductible. Equity dividends are assumed immaterial/ignored per your instruction. Educational model, not tax advice.
+    </div>
+  </aside>
+
+  <main class="main">
+    <div class="cards" id="cards"></div>
+
+    <div class="panel">
+      <h3>Projected annual tax payment <span class="badge">P25–P75 band</span></h3>
+      <p class="ph">Solid line = median (most probable) tax each year. Shaded area = 25th–75th percentile (interquartile range) across all simulated paths.</p>
+      <div class="chartbox"><canvas id="taxChart"></canvas></div>
+    </div>
+
+    <div class="panel">
+      <h3>Spend-down: fund value &amp; sleeves</h3>
+      <p class="ph">Median total market value (drawn to ~$0), median equity sleeve, and median distributions to claimants.</p>
+      <div class="chartbox"><canvas id="mvChart"></canvas></div>
+    </div>
+
+    <div class="panel">
+      <h3>Year-by-year detail</h3>
+      <p class="ph">All figures in $ millions.</p>
+      <div class="tablewrap">
+        <table id="tbl">
+          <thead><tr>
+            <th>Year</th><th>Median tax</th><th>P25</th><th>P75</th><th>Mean tax</th>
+            <th>Median realized gain</th><th>Median end MV</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="note" id="methNote"></div>
+    </div>
+  </main>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+let taxChart, mvChart, spare=null;
+
+function gaussian(mean, sd){
+  if (spare !== null){ const v = spare; spare = null; return mean + sd*v; }
+  let u,v,s; do { u=Math.random()*2-1; v=Math.random()*2-1; s=u*u+v*v; } while(s>=1||s===0);
+  const mul = Math.sqrt(-2*Math.log(s)/s); spare = v*mul; return mean + sd*(u*mul);
+}
+function pct(sorted,p){ if(!sorted.length)return 0; const i=(sorted.length-1)*p,lo=Math.floor(i),hi=Math.ceil(i);
+  return lo===hi?sorted[lo]:sorted[lo]+(sorted[hi]-sorted[lo])*(i-lo); }
+function irr(cfs){ const npv=r=>cfs.reduce((a,c,i)=>a+c/Math.pow(1+r,i),0); let lo=-0.6,hi=1.0,flo=npv(lo),fhi=npv(hi);
+  if(flo*fhi>0)return NaN; for(let k=0;k<80;k++){const m=(lo+hi)/2,fm=npv(m); if(Math.abs(fm)<1e-7)return m; if(flo*fm<0){hi=m;}else{lo=m;flo=fm;}} return (lo+hi)/2; }
+function clamp(x,a,b){ return Math.max(a, Math.min(b, x)); }
+
+function runMC(p){
+  const Y=p.n, S=p.sims;
+  const tax=Array.from({length:Y},()=>new Float64Array(S));
+  const rg =Array.from({length:Y},()=>new Float64Array(S));
+  const mvE=Array.from({length:Y},()=>new Float64Array(S));
+  const eqE=Array.from({length:Y},()=>new Float64Array(S));
+  const dst=Array.from({length:Y},()=>new Float64Array(S));
+  const totalTax=new Float64Array(S), irrArr=new Float64Array(S);
+
+  for(let s=0;s<S;s++){
+    let E=p.mv0*p.eqw, B=p.mv0*(1-p.eqw);
+    let Eb=Math.max(0, E - p.ug0);   // all unrealized gains sit in equity
+    let lossCarry=0, tot=0; const cfs=[-p.mv0];
+    for(let t=0;t<Y;t++){
+      const remaining=Y-t;
+      const mvBeg=E+B;
+      const re=gaussian(p.eqr,p.eqv), rb=gaussian(p.bdr,p.bdv);
+      let E1=E*(1+re); if(E1<0)E1=0;
+      let B1=B*(1+rb); if(B1<0)B1=0;
+      const MV1=E1+B1;
+      const ugE=E1-Eb, g = E1>0 ? ugE/E1 : 0;   // equity embedded gain ratio
+
+      // target outflow to amortize total fund to zero at planning rate
+      let O;
+      if(t===Y-1){ O=MV1; }
+      else { const i=p.plan, af=i/(1-Math.pow(1+i,-remaining)); O=clamp(MV1*af,0,MV1); }
+
+      // split outflow between sleeves per policy
+      let eqSold;
+      if(t===Y-1){ eqSold=E1; }
+      else if(p.policy==='rebal'){ eqSold = E1 - p.eqw*(MV1-O); }
+      else if(p.policy==='bonds'){ eqSold = Math.max(0, O - B1); }
+      else if(p.policy==='equity'){ eqSold = Math.min(O, E1); }
+      else { const ef = p.policy==='split7030'?0.30 : p.policy==='split5050'?0.50 : 0.70; eqSold = ef*O; }
+      eqSold = clamp(eqSold, O - B1, E1);   // keep bondSold within [0,B1]
+      const bondSold = O - eqSold;
+
+      let realizedGain = eqSold>0 ? eqSold*g : 0;  // selling equity realizes gain (or loss if g<0)
+      const admin = p.admin*mvBeg;
+      let taxable = realizedGain - admin - lossCarry;
+      let tx=0;
+      if(taxable>0){ tx=p.tax*taxable; lossCarry=0; } else { lossCarry=-taxable; tx=0; }
+      let dist = O - tx; if(dist<0)dist=0;
+
+      // state update
+      let E2 = E1 - eqSold;
+      let Eb2 = eqSold>0 ? Eb - eqSold*(1-g) : Eb - eqSold; // sell: remove basis pro-rata; buy: add at market
+      let B2 = B1 - bondSold;
+      if(E2<0)E2=0; if(B2<0)B2=0; if(Eb2<0)Eb2=0; if(Eb2>E2)Eb2=E2;
+
+      tax[t][s]=tx; rg[t][s]=Math.max(0,realizedGain); mvE[t][s]=E2+B2; eqE[t][s]=E2; dst[t][s]=dist;
+      tot+=tx; cfs.push(dist);
+      E=E2; B=B2; Eb=Eb2;
+    }
+    totalTax[s]=tot; irrArr[s]=irr(cfs);
+  }
+
+  const rows=[];
+  for(let t=0;t<Y;t++){
+    const a=Array.from(tax[t]).sort((x,y)=>x-y);
+    const r=Array.from(rg[t]).sort((x,y)=>x-y);
+    const m=Array.from(mvE[t]).sort((x,y)=>x-y);
+    const e=Array.from(eqE[t]).sort((x,y)=>x-y);
+    const d=Array.from(dst[t]).sort((x,y)=>x-y);
+    let mean=0; for(let s=0;s<S;s++)mean+=tax[t][s]; mean/=S;
+    rows.push({ year:t+1, med:pct(a,.5), p25:pct(a,.25), p75:pct(a,.75), mean,
+      medRG:pct(r,.5), medMV:pct(m,.5), medEq:pct(e,.5), medDist:pct(d,.5) });
+  }
+  const tt=Array.from(totalTax).sort((x,y)=>x-y);
+  const ir=Array.from(irrArr).filter(x=>!isNaN(x)).sort((x,y)=>x-y);
+  return { rows, totMed:pct(tt,.5), totP25:pct(tt,.25), totP75:pct(tt,.75), irrMed:pct(ir,.5) };
+}
+
+const fM=x=>'$'+x.toLocaleString('en-US',{maximumFractionDigits:1,minimumFractionDigits:1})+'M';
+const fM0=x=>'$'+x.toLocaleString('en-US',{maximumFractionDigits:0})+'M';
+
+function render(res,p){
+  let pvTax=0; res.rows.forEach(r=>pvTax+=r.med/Math.pow(1+p.plan,r.year));
+  $('cards').innerHTML=`
+    <div class="card"><div class="k">Total tax (median)</div><div class="v">${fM0(res.totMed)}</div></div>
+    <div class="card"><div class="k">Total tax P25–P75</div><div class="v" style="font-size:16px">${fM0(res.totP25)} – ${fM0(res.totP75)}</div></div>
+    <div class="card"><div class="k">PV of taxes @ ${(p.plan*100).toFixed(1)}%</div><div class="v">${fM0(pvTax)}</div></div>
+    <div class="card"><div class="k">Eff. after-tax return delivered</div><div class="v">${(res.irrMed*100).toFixed(2)}<small>%</small></div></div>`;
+
+  const labels=res.rows.map(r=>r.year);
+  if(taxChart)taxChart.destroy();
+  taxChart=new Chart($('taxChart'),{type:'line',
+    data:{labels,datasets:[
+      {label:'P75',data:res.rows.map(r=>r.p75),borderColor:'rgba(31,79,212,0)',backgroundColor:'rgba(47,111,237,0.14)',pointRadius:0,fill:'+1',order:3},
+      {label:'P25',data:res.rows.map(r=>r.p25),borderColor:'rgba(31,79,212,0)',backgroundColor:'rgba(47,111,237,0.14)',pointRadius:0,fill:false,order:3},
+      {label:'Median tax',data:res.rows.map(r=>r.med),borderColor:'#1f4fd4',borderWidth:2.5,pointRadius:0,tension:.15,order:1},
+      {label:'Mean tax',data:res.rows.map(r=>r.mean),borderColor:'#e0792b',borderWidth:1.5,borderDash:[5,4],pointRadius:0,tension:.15,order:2}
+    ]},
+    options:{responsive:true,maintainAspectRatio:false,interaction:{mode:'index',intersect:false},
+      plugins:{legend:{labels:{filter:i=>i.text!=='P25'&&i.text!=='P75',usePointStyle:true,boxWidth:8}},
+        tooltip:{callbacks:{label:c=>`${c.dataset.label}: ${fM(c.parsed.y)}`}}},
+      scales:{x:{title:{display:true,text:'Year from today'},grid:{display:false}},
+        y:{title:{display:true,text:'Tax payment ($M)'},ticks:{callback:v=>'$'+v}}}}});
+
+  if(mvChart)mvChart.destroy();
+  mvChart=new Chart($('mvChart'),{type:'line',
+    data:{labels,datasets:[
+      {label:'Total fund MV',data:res.rows.map(r=>r.medMV),borderColor:'#16a34a',backgroundColor:'rgba(22,163,74,0.08)',borderWidth:2.5,pointRadius:0,fill:true,tension:.15},
+      {label:'Equity sleeve',data:res.rows.map(r=>r.medEq),borderColor:'#0e7490',borderWidth:2,pointRadius:0,tension:.15},
+      {label:'Distribution to claimants',data:res.rows.map(r=>r.medDist),borderColor:'#7c3aed',borderWidth:2,borderDash:[4,3],pointRadius:0,tension:.15}
+    ]},
+    options:{responsive:true,maintainAspectRatio:false,interaction:{mode:'index',intersect:false},
+      plugins:{legend:{labels:{usePointStyle:true,boxWidth:8}},
+        tooltip:{callbacks:{label:c=>`${c.dataset.label}: ${fM(c.parsed.y)}`}}},
+      scales:{x:{title:{display:true,text:'Year from today'},grid:{display:false}},
+        y:{title:{display:true,text:'$M'},ticks:{callback:v=>'$'+v}}}}});
+
+  $('tbl').querySelector('tbody').innerHTML=res.rows.map(r=>`<tr>
+    <td>${r.year}</td><td class="hl">${fM(r.med)}</td><td>${fM(r.p25)}</td><td>${fM(r.p75)}</td>
+    <td>${fM(r.mean)}</td><td>${fM(r.medRG)}</td><td>${fM(r.medMV)}</td></tr>`).join('');
+
+  const polTxt={rebal:'rebalanced to target each year (trimming appreciated equity)',
+    bonds:'bonds sold first, deferring equity-gain realization',
+    equity:'equities sold first',
+    split7030:'a fixed 70% bonds / 30% equity split of each withdrawal',
+    split5050:'a fixed 50/50 split of each withdrawal',
+    split3070:'a fixed 30% bonds / 70% equity split of each withdrawal'}[p.policy];
+  $('methNote').innerHTML=`<b>Method:</b> ${p.sims.toLocaleString()} paths. Each year equity returns ~N(${(p.eqr*100).toFixed(1)}%, σ${(p.eqv*100).toFixed(0)}%) as price appreciation feeding unrealized gains; munis return ~N(${(p.bdr*100).toFixed(1)}%, σ${(p.bdv*100).toFixed(0)}%) tax-free. The fund amortizes to $0 by year ${p.n} at a ${(p.plan*100).toFixed(1)}% planning rate; the spend-down is funded with ${polTxt} (a sleeve that runs dry is topped up from the other). Equity sold realizes gains at the sleeve's embedded-gain ratio (starts at ${(100*p.ug0/(p.mv0*p.eqw)||0).toFixed(0)}%); tax = ${(p.tax*100).toFixed(0)}% × (realized gain − admin − loss carryforward). Bands show the 25th–75th percentile; "most probable" = median (P50).`;
+}
+
+function updateDerived(){
+  const mv0=parseFloat($('mv0').value)||0, eqw=(parseFloat($('eqw').value)||0)/100, ug=parseFloat($('ug0').value)||0;
+  const eMV=mv0*eqw, bMV=mv0*(1-eqw), basis=Math.max(0,eMV-ug), ratio=eMV>0?100*Math.min(ug,eMV)/eMV:0;
+  $('derived').innerHTML=`Equity sleeve <b>${fM0(eMV)}</b> (basis ${fM0(basis)}, ${ratio.toFixed(0)}% embedded gain) &nbsp;·&nbsp; Muni sleeve <b>${fM0(bMV)}</b>`;
+}
+
+function run(){
+  const p={ n:Math.max(1,parseInt($('n').value)||25), mv0:parseFloat($('mv0').value)||0,
+    eqw:clamp((parseFloat($('eqw').value)||0)/100,0,1), ug0:parseFloat($('ug0').value)||0,
+    eqr:(parseFloat($('eqr').value)||0)/100, eqv:(parseFloat($('eqv').value)||0)/100,
+    bdr:(parseFloat($('bdr').value)||0)/100, bdv:(parseFloat($('bdv').value)||0)/100,
+    tax:(parseFloat($('tax').value)||0)/100, plan:(parseFloat($('plan').value)||.001)/100,
+    admin:(parseFloat($('admin').value)||0)/100, policy:$('policy').value, sims:parseInt($('sims').value)||5000 };
+  if(p.ug0>p.mv0*p.eqw)p.ug0=p.mv0*p.eqw;
+  const b=$('runBtn'); b.textContent='Running…'; b.disabled=true;
+  setTimeout(()=>{ render(runMC(p),p); b.textContent='Run simulation'; b.disabled=false; },20);
+}
+
+['mv0','eqw','ug0'].forEach(id=>$(id).addEventListener('input',updateDerived));
+$('runBtn').addEventListener('click',run);
+updateDerived(); run();
+</script>
+</body>
+</html>

@@ -114,6 +114,11 @@
       </div>
     </div>
     <div class="field">
+      <label>Distribution shape — decline rate (%/yr)
+        <span class="hint">0 = level payouts; higher = front-loaded payouts (and tax). Fund still clears to $0.</span></label>
+      <input type="number" id="decline" value="0" min="0" max="15" step="0.5">
+    </div>
+    <div class="field">
       <label>Withdrawal / rebalancing policy
         <span class="hint">which sleeve funds the spend-down</span></label>
       <select id="policy">
@@ -129,6 +134,18 @@
       <label>Admin costs (% of MV)
         <span class="hint">deductible against gains</span></label>
       <input type="number" id="admin" value="0.25" step="0.05">
+    </div>
+
+    <h2>Claims base (payment %)</h2>
+    <div class="field">
+      <label>Liquidated claim value, year 1 ($M)
+        <span class="hint">value of claims paid this year at 100%. Set 0 to disable.</span></label>
+      <input type="number" id="claims0" value="200" min="0" step="10">
+    </div>
+    <div class="field">
+      <label>Claims decline rate (%/yr)
+        <span class="hint">shrinking claimant pool over time</span></label>
+      <input type="number" id="claimsDecl" value="4" min="0" max="20" step="0.5">
     </div>
 
     <h2>Simulation</h2>
@@ -159,12 +176,12 @@
 
     <div class="panel">
       <h3>Year-by-year detail</h3>
-      <p class="ph">All figures in $ millions.</p>
+      <p class="ph">All figures in $ millions; implied payment % = median distribution ÷ that year's liquidated claim value.</p>
       <div class="tablewrap">
         <table id="tbl">
           <thead><tr>
             <th>Year</th><th>Median tax</th><th>P25</th><th>P75</th><th>Mean tax</th>
-            <th>Median realized gain</th><th>Median end MV</th>
+            <th>Median realized gain</th><th>Median claims paid</th><th>Median end MV</th><th>Implied PP</th>
           </tr></thead>
           <tbody></tbody>
         </table>
@@ -189,6 +206,15 @@ function irr(cfs){ const npv=r=>cfs.reduce((a,c,i)=>a+c/Math.pow(1+r,i),0); let 
   if(flo*fhi>0)return NaN; for(let k=0;k<80;k++){const m=(lo+hi)/2,fm=npv(m); if(Math.abs(fm)<1e-7)return m; if(flo*fm<0){hi=m;}else{lo=m;flo=fm;}} return (lo+hi)/2; }
 function clamp(x,a,b){ return Math.max(a, Math.min(b, x)); }
 
+// First-payment fraction of a graded annuity that amortizes PV to zero over N years,
+// earning rate i, with payments changing at rate g per year (g<0 = declining/front-loaded).
+function outflowFactor(i, g, N){
+  if(N<=0) return 1;
+  const r=(1+g)/(1+i);
+  if(Math.abs(r-1)<1e-9) return (1+i)/N;
+  return (1+i)*(1-r)/(1-Math.pow(r,N));
+}
+
 function runMC(p){
   const Y=p.n, S=p.sims;
   const tax=Array.from({length:Y},()=>new Float64Array(S));
@@ -197,6 +223,7 @@ function runMC(p){
   const eqE=Array.from({length:Y},()=>new Float64Array(S));
   const dst=Array.from({length:Y},()=>new Float64Array(S));
   const totalTax=new Float64Array(S), irrArr=new Float64Array(S);
+  const g = -p.decline; // declining payouts -> negative growth
 
   for(let s=0;s<S;s++){
     let E=p.mv0*p.eqw, B=p.mv0*(1-p.eqw);
@@ -209,12 +236,12 @@ function runMC(p){
       let E1=E*(1+re); if(E1<0)E1=0;
       let B1=B*(1+rb); if(B1<0)B1=0;
       const MV1=E1+B1;
-      const ugE=E1-Eb, g = E1>0 ? ugE/E1 : 0;   // equity embedded gain ratio
+      const ugE=E1-Eb, gg = E1>0 ? ugE/E1 : 0;   // equity embedded gain ratio
 
-      // target outflow to amortize total fund to zero at planning rate
+      // target outflow to amortize total fund to zero, shaped by decline rate
       let O;
       if(t===Y-1){ O=MV1; }
-      else { const i=p.plan, af=i/(1-Math.pow(1+i,-remaining)); O=clamp(MV1*af,0,MV1); }
+      else { O=clamp(MV1*outflowFactor(p.plan, g, remaining),0,MV1); }
 
       // split outflow between sleeves per policy
       let eqSold;
@@ -226,7 +253,7 @@ function runMC(p){
       eqSold = clamp(eqSold, O - B1, E1);   // keep bondSold within [0,B1]
       const bondSold = O - eqSold;
 
-      let realizedGain = eqSold>0 ? eqSold*g : 0;  // selling equity realizes gain (or loss if g<0)
+      let realizedGain = eqSold>0 ? eqSold*gg : 0;
       const admin = p.admin*mvBeg;
       let taxable = realizedGain - admin - lossCarry;
       let tx=0;
@@ -235,7 +262,7 @@ function runMC(p){
 
       // state update
       let E2 = E1 - eqSold;
-      let Eb2 = eqSold>0 ? Eb - eqSold*(1-g) : Eb - eqSold; // sell: remove basis pro-rata; buy: add at market
+      let Eb2 = eqSold>0 ? Eb - eqSold*(1-gg) : Eb - eqSold;
       let B2 = B1 - bondSold;
       if(E2<0)E2=0; if(B2<0)B2=0; if(Eb2<0)Eb2=0; if(Eb2>E2)Eb2=E2;
 
@@ -254,8 +281,12 @@ function runMC(p){
     const e=Array.from(eqE[t]).sort((x,y)=>x-y);
     const d=Array.from(dst[t]).sort((x,y)=>x-y);
     let mean=0; for(let s=0;s<S;s++)mean+=tax[t][s]; mean/=S;
+    // claims base for this year (deterministic curve)
+    const claimFlow = p.claims0>0 ? p.claims0*Math.pow(1-p.claimsDecl, t) : 0;
+    const medDist = pct(d,.5);
     rows.push({ year:t+1, med:pct(a,.5), p25:pct(a,.25), p75:pct(a,.75), mean,
-      medRG:pct(r,.5), medMV:pct(m,.5), medEq:pct(e,.5), medDist:pct(d,.5) });
+      medRG:pct(r,.5), medMV:pct(m,.5), medEq:pct(e,.5), medDist,
+      claimFlow, pp: claimFlow>0 ? medDist/claimFlow : null });
   }
   const tt=Array.from(totalTax).sort((x,y)=>x-y);
   const ir=Array.from(irrArr).filter(x=>!isNaN(x)).sort((x,y)=>x-y);
@@ -264,14 +295,23 @@ function runMC(p){
 
 const fM=x=>'$'+x.toLocaleString('en-US',{maximumFractionDigits:1,minimumFractionDigits:1})+'M';
 const fM0=x=>'$'+x.toLocaleString('en-US',{maximumFractionDigits:0})+'M';
+const fPP=x=>x==null?'—':(x*100).toFixed(1)+'%';
 
 function render(res,p){
   let pvTax=0; res.rows.forEach(r=>pvTax+=r.med/Math.pow(1+p.plan,r.year));
+  const ppOn = p.claims0>0;
+  const pp1 = ppOn ? res.rows[0].pp : null;
+  const ppN = ppOn ? res.rows[res.rows.length-1].pp : null;
+  const ppCard = ppOn
+    ? `<div class="card"><div class="k">Implied payment % · yr1 → final</div><div class="v" style="font-size:18px">${fPP(pp1)} → ${fPP(ppN)}</div></div>`
+    : '';
+
   $('cards').innerHTML=`
     <div class="card"><div class="k">Total tax (median)</div><div class="v">${fM0(res.totMed)}</div></div>
     <div class="card"><div class="k">Total tax P25–P75</div><div class="v" style="font-size:16px">${fM0(res.totP25)} – ${fM0(res.totP75)}</div></div>
     <div class="card"><div class="k">PV of taxes @ ${(p.plan*100).toFixed(1)}%</div><div class="v">${fM0(pvTax)}</div></div>
-    <div class="card"><div class="k">Eff. after-tax return delivered</div><div class="v">${(res.irrMed*100).toFixed(2)}<small>%</small></div></div>`;
+    <div class="card"><div class="k">Eff. after-tax return delivered</div><div class="v">${(res.irrMed*100).toFixed(2)}<small>%</small></div></div>
+    ${ppCard}`;
 
   const labels=res.rows.map(r=>r.year);
   if(taxChart)taxChart.destroy();
@@ -303,7 +343,7 @@ function render(res,p){
 
   $('tbl').querySelector('tbody').innerHTML=res.rows.map(r=>`<tr>
     <td>${r.year}</td><td class="hl">${fM(r.med)}</td><td>${fM(r.p25)}</td><td>${fM(r.p75)}</td>
-    <td>${fM(r.mean)}</td><td>${fM(r.medRG)}</td><td>${fM(r.medMV)}</td></tr>`).join('');
+    <td>${fM(r.mean)}</td><td>${fM(r.medRG)}</td><td>${fM(r.medDist)}</td><td>${fM(r.medMV)}</td><td>${fPP(r.pp)}</td></tr>`).join('');
 
   const polTxt={rebal:'rebalanced to target each year (trimming appreciated equity)',
     bonds:'bonds sold first, deferring equity-gain realization',
@@ -311,7 +351,9 @@ function render(res,p){
     split7030:'a fixed 70% bonds / 30% equity split of each withdrawal',
     split5050:'a fixed 50/50 split of each withdrawal',
     split3070:'a fixed 30% bonds / 70% equity split of each withdrawal'}[p.policy];
-  $('methNote').innerHTML=`<b>Method:</b> ${p.sims.toLocaleString()} paths. Each year equity returns ~N(${(p.eqr*100).toFixed(1)}%, σ${(p.eqv*100).toFixed(0)}%) as price appreciation feeding unrealized gains; munis return ~N(${(p.bdr*100).toFixed(1)}%, σ${(p.bdv*100).toFixed(0)}%) tax-free. The fund amortizes to $0 by year ${p.n} at a ${(p.plan*100).toFixed(1)}% planning rate; the spend-down is funded with ${polTxt} (a sleeve that runs dry is topped up from the other). Equity sold realizes gains at the sleeve's embedded-gain ratio (starts at ${(100*p.ug0/(p.mv0*p.eqw)||0).toFixed(0)}%); tax = ${(p.tax*100).toFixed(0)}% × (realized gain − admin − loss carryforward). Bands show the 25th–75th percentile; "most probable" = median (P50).`;
+  const shapeTxt = p.decline>0 ? `declining ~${(p.decline*100).toFixed(1)}%/yr (front-loaded)` : 'level';
+  const ppTxt = ppOn ? ` Implied payment % = median distribution ÷ a claim base of ${fM0(p.claims0)} in year 1, declining ${(p.claimsDecl*100).toFixed(1)}%/yr.` : '';
+  $('methNote').innerHTML=`<b>Method:</b> ${p.sims.toLocaleString()} paths. Equity returns ~N(${(p.eqr*100).toFixed(1)}%, σ${(p.eqv*100).toFixed(0)}%) as appreciation feeding unrealized gains; munis ~N(${(p.bdr*100).toFixed(1)}%, σ${(p.bdv*100).toFixed(0)}%) tax-free. The fund amortizes to $0 by year ${p.n} at a ${(p.plan*100).toFixed(1)}% planning rate on a ${shapeTxt} payout schedule, funded with ${polTxt} (a depleted sleeve is topped up from the other). Equity sold realizes gains at the embedded-gain ratio (starts at ${(100*p.ug0/(p.mv0*p.eqw)||0).toFixed(0)}%); tax = ${(p.tax*100).toFixed(0)}% × (realized gain − admin − loss carryforward). Bands = 25th–75th percentile; "most probable" = median.${ppTxt}`;
 }
 
 function updateDerived(){
@@ -326,7 +368,10 @@ function run(){
     eqr:(parseFloat($('eqr').value)||0)/100, eqv:(parseFloat($('eqv').value)||0)/100,
     bdr:(parseFloat($('bdr').value)||0)/100, bdv:(parseFloat($('bdv').value)||0)/100,
     tax:(parseFloat($('tax').value)||0)/100, plan:(parseFloat($('plan').value)||.001)/100,
-    admin:(parseFloat($('admin').value)||0)/100, policy:$('policy').value, sims:parseInt($('sims').value)||5000 };
+    decline:clamp((parseFloat($('decline').value)||0)/100,0,0.5),
+    admin:(parseFloat($('admin').value)||0)/100, policy:$('policy').value,
+    claims0:parseFloat($('claims0').value)||0, claimsDecl:clamp((parseFloat($('claimsDecl').value)||0)/100,0,0.5),
+    sims:parseInt($('sims').value)||5000 };
   if(p.ug0>p.mv0*p.eqw)p.ug0=p.mv0*p.eqw;
   const b=$('runBtn'); b.textContent='Running…'; b.disabled=true;
   setTimeout(()=>{ render(runMC(p),p); b.textContent='Run simulation'; b.disabled=false; },20);
